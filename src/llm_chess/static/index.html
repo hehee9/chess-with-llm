@@ -1,0 +1,156 @@
+<!--
+THESIS: 한 판의 집중을 지키는 전자식 체스 시계 화면으로, 일반적인 게임 대시보드 배열을 거부합니다.
+OWN-WORLD: matte graphite 작업면, chalk 문자, 황동 활성 신호, 목재색 체스판, 시스템 유니코드 글리프를 단단한 장비 문법으로 엮습니다.
+STORY: 사용자는 색을 고르고, 큰 판에서 수를 둔 뒤, 오른쪽 시계에서 다음 행동과 LLM의 응답을 확인합니다.
+FIRST VIEWPORT: 상단 도구줄 아래 왼쪽에 가장 큰 정사각 체스판, 오른쪽에 큰 황동 차례 표시와 마지막 수·수순 레일을 둡니다.
+FORM: Operate용 clock-workbench 구성, 사용자 확정 방향을 채택한 표현으로 작업면의 큰 판과 오른쪽 시계 레일을 사용합니다.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A local chess workbench where a browser human and a CLI LLM share one game.">
+  <title>LLM Chess · Local Chess Workbench</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">♞</span>
+        <div>
+          <p class="eyebrow" data-i18n="brand.tagline">LOCAL MATCH · HUMAN × LLM</p>
+          <h1>LLM Chess</h1>
+        </div>
+      </div>
+      <div class="topbar-meta">
+        <span class="match-id" id="match-id" data-i18n="match.none">No game</span>
+        <label class="locale-control" for="toolbar-locale">
+          <span class="locale-label" data-i18n="language.label">Language</span>
+          <select id="toolbar-locale" class="locale-select" data-locale-select data-i18n-aria-label="language.label" aria-label="Language">
+            <option value="en">English</option>
+            <option value="ko">한국어</option>
+            <option value="zh-Hans">简体中文</option>
+            <option value="zh-Hant">繁體中文</option>
+            <option value="ja">日本語</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </label>
+        <button class="button button-secondary button-compact" id="new-game-button" data-i18n="toolbar.newGame" type="button">New game</button>
+      </div>
+    </header>
+
+    <main class="workspace" data-i18n-aria-label="workspace.aria" aria-label="Chess workbench">
+      <section class="board-workspace" aria-labelledby="board-title">
+        <div class="workspace-heading">
+          <div>
+            <p class="section-label" data-i18n="board.section">BOARD</p>
+            <h2 id="board-title" data-i18n="board.currentGame">Current game</h2>
+          </div>
+          <p class="board-caption" id="board-caption" data-i18n="board.waiting">Waiting for server state</p>
+        </div>
+        <div class="board-stage">
+          <div class="board-frame" id="board-frame">
+            <div class="chessboard" id="chessboard" role="grid" data-i18n-aria-label="board.aria" aria-label="Chessboard"></div>
+          </div>
+        </div>
+        <div class="board-status-line" aria-live="polite">
+          <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+          <span id="board-status" data-i18n="status.connecting">Connecting to the server.</span>
+          <span class="status-separator" aria-hidden="true">·</span>
+          <span id="revision-label" data-i18n="board.revisionInitial">REV 0</span>
+        </div>
+      </section>
+
+      <aside class="info-rail" data-i18n-aria-label="connection.aria" aria-label="Connection status">
+        <section class="turn-section" aria-labelledby="turn-heading">
+          <div class="section-kicker">
+            <span class="section-label" id="turn-heading" data-i18n="turn.heading">ACTIVE TURN</span>
+            <span class="live-indicator" id="live-indicator"><i aria-hidden="true"></i> LIVE</span>
+          </div>
+          <div class="clock-face" id="clock-face" data-tone="setup">
+            <span class="clock-label" id="clock-label" data-i18n="clock.setup.label">GAME READY</span>
+            <strong class="clock-value" id="clock-value" data-i18n="clock.setup.value">—</strong>
+            <span class="clock-detail" id="clock-detail" data-i18n="clock.setup.detail">Choose a color to begin.</span>
+          </div>
+        </section>
+
+        <section class="rail-section last-move-section" aria-labelledby="last-move-heading">
+          <div class="section-heading-row">
+            <h2 id="last-move-heading" data-i18n="lastMove.heading">LAST MOVE</h2>
+          </div>
+          <p class="last-move-value" id="last-move-value" data-i18n="lastMove.empty">No moves yet</p>
+          <p class="last-move-meta" id="last-move-meta" data-i18n="lastMove.waiting">Waiting for the first move</p>
+        </section>
+
+        <section class="rail-section move-history-section" aria-labelledby="move-history-heading">
+          <div class="section-heading-row">
+            <h2 id="move-history-heading" data-i18n="history.heading">MOVE HISTORY</h2>
+            <span class="section-index" id="move-count" data-i18n-aria-label="history.count" aria-label="0 moves">0 moves</span>
+          </div>
+          <ol class="move-list" id="move-list" data-i18n-aria-label="history.aria" aria-label="Current game move history"></ol>
+          <p class="empty-history" id="empty-history" data-i18n="history.empty">Moves will appear here after the game starts.</p>
+        </section>
+
+        <section class="rail-section rail-footer" data-i18n-aria-label="connection.aria" aria-label="Connection status">
+          <div class="connection-row">
+            <span class="connection-label" data-i18n="connection.label">Connection</span>
+            <span class="connection-value" id="connection-value" data-i18n="connection.connecting">Checking</span>
+          </div>
+          <p class="error-copy" id="error-copy" role="alert" hidden></p>
+        </section>
+      </aside>
+    </main>
+
+    <section class="setup-layer" id="setup-layer" aria-labelledby="setup-heading" hidden>
+      <div class="setup-panel">
+        <div class="setup-toolbar">
+          <p class="eyebrow" data-i18n="setup.eyebrow">NEW MATCH · CHOOSE YOUR SIDE</p>
+          <label class="locale-control" for="setup-locale">
+            <span class="locale-label" data-i18n="language.label">Language</span>
+            <select id="setup-locale" class="locale-select" data-locale-select data-i18n-aria-label="language.label" aria-label="Language">
+              <option value="en">English</option>
+              <option value="ko">한국어</option>
+              <option value="zh-Hans">简体中文</option>
+              <option value="zh-Hant">繁體中文</option>
+              <option value="ja">日本語</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+            </select>
+          </label>
+        </div>
+        <h2 id="setup-heading" data-i18n="setup.heading">Choose your color</h2>
+        <p class="setup-copy" data-i18n="setup.description">The board follows your color. The LLM sends its moves from a separate CLI.</p>
+        <div class="color-choice" data-i18n-aria-label="setup.groupAria" role="group" aria-label="Human color selection">
+          <button class="color-button color-button-white" type="button" data-color="white">
+            <span class="color-glyph" aria-hidden="true">♔</span>
+            <span><strong data-i18n="setup.white.label">Play White</strong><small data-i18n="setup.white.detail">You move first</small></span>
+          </button>
+          <button class="color-button color-button-black" type="button" data-color="black">
+            <span class="color-glyph" aria-hidden="true">♚</span>
+            <span><strong data-i18n="setup.black.label">Play Black</strong><small data-i18n="setup.black.detail">The LLM moves first</small></span>
+          </button>
+        </div>
+        <p class="setup-error" id="setup-error" role="alert" hidden></p>
+      </div>
+    </section>
+
+    <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-heading">
+      <form method="dialog" class="promotion-form">
+        <p class="section-label" data-i18n="promotion.eyebrow">MOVE COMPLETE · PROMOTION</p>
+        <h2 id="promotion-heading" data-i18n="promotion.heading">Choose a promotion piece</h2>
+        <p class="promotion-copy" data-i18n="promotion.description">Choose one of the four legal moves supplied by the server.</p>
+        <div class="promotion-options" id="promotion-options"></div>
+        <button class="button button-ghost" id="promotion-cancel" data-i18n="promotion.cancel" value="cancel" type="submit">Cancel</button>
+      </form>
+    </dialog>
+  </div>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

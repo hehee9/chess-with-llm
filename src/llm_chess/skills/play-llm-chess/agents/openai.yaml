@@ -1,0 +1,4 @@
+interface:
+  display_name: "Play LLM Chess"
+  short_description: "Play a browser-vs-CLI chess game to completion"
+  default_prompt: "Use $play-llm-chess to play a complete browser-vs-CLI chess game with me."

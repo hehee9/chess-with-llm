@@ -1,0 +1,35 @@
+# Internal design documents
+/DESIGN.md
+/PRODUCT.md
+
+# Build and package artifacts
+/build/
+/dist/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Browser test artifacts and logs
+.playwright-cli/
+*.log
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
