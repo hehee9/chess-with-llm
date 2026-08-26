@@ -44,6 +44,7 @@ const STATUS_REASON_KEYS = {
   fivefold_repetition: "statusReason.fivefold_repetition",
   fifty_moves: "statusReason.fifty_moves",
   threefold_repetition: "statusReason.threefold_repetition",
+  resignation: "statusReason.resignation",
 };
 
 const initialSnapshot = {
@@ -63,12 +64,15 @@ const initialSnapshot = {
   check: false,
   checked_king_square: null,
   result: null,
+  takeback: null,
+  resigned_by: null,
 };
 
 const ui = {
   snapshot: initialSnapshot,
   setupOpen: true,
   requestPending: false,
+  actionDialogMode: null,
   selectedSquare: null,
   promotionMoves: [],
   setupReturnFocus: null,
@@ -101,9 +105,21 @@ const elements = {
   setupLayer: document.querySelector("#setup-layer"),
   setupError: document.querySelector("#setup-error"),
   newGameButton: document.querySelector("#new-game-button"),
+  takebackButton: document.querySelector("#takeback-button"),
+  resignButton: document.querySelector("#resign-button"),
   promotionDialog: document.querySelector("#promotion-dialog"),
   promotionOptions: document.querySelector("#promotion-options"),
   promotionCancel: document.querySelector("#promotion-cancel"),
+  actionDialog: document.querySelector("#game-action-dialog"),
+  actionDialogEyebrow: document.querySelector("#action-dialog-eyebrow"),
+  actionDialogHeading: document.querySelector("#action-dialog-heading"),
+  actionDialogDescription: document.querySelector("#action-dialog-description"),
+  actionDialogError: document.querySelector("#action-dialog-error"),
+  actionDialogCancel: document.querySelector("#action-dialog-cancel"),
+  actionDialogReject: document.querySelector("#action-dialog-reject"),
+  actionDialogAccept: document.querySelector("#action-dialog-accept"),
+  actionDialogPrimary: document.querySelector("#action-dialog-primary"),
+  actionDialogResign: document.querySelector("#action-dialog-resign"),
   colorButtons: document.querySelectorAll("[data-color]"),
   localeSelects: document.querySelectorAll("[data-locale-select]"),
 };
@@ -231,7 +247,46 @@ function canHumanMove() {
   const snapshot = ui.snapshot;
   return Boolean(snapshot.game_id)
     && snapshot.status === "active"
+    && !isTakebackPending()
     && snapshot.turn === "human"
+    && !ui.requestPending
+    && ui.connection === "connected";
+}
+
+/** @description 현재 스냅샷에 응답하지 않은 무르기 요청이 있는지 반환합니다. */
+function isTakebackPending() {
+  return ui.snapshot.takeback?.state === "pending";
+}
+
+/** @description 새 무르기 요청을 보낼 수 있는지 반환합니다. */
+function canRequestTakeback() {
+  const snapshot = ui.snapshot;
+  return Boolean(snapshot.game_id)
+    && snapshot.status === "active"
+    && !isTakebackPending()
+    && snapshot.move_history.some((move) => move.actor === "human")
+    && !ui.requestPending
+    && ui.connection === "connected";
+}
+
+/** @description 현재 수 기록에서 새 무르기 요청의 대상과 범위를 계산합니다. */
+function takebackPreview() {
+  const history = ui.snapshot.move_history;
+  const targetIndex = [...history].reverse().findIndex((move) => move.actor === "human");
+  if (targetIndex < 0) {
+    return null;
+  }
+  const index = history.length - 1 - targetIndex;
+  return {
+    target_ply: history[index].ply || index + 1,
+    undone_plies: index === history.length - 1 ? 1 : 2,
+  };
+}
+
+/** @description 진행 중인 대국을 항복할 수 있는지 반환합니다. */
+function canResign() {
+  return Boolean(ui.snapshot.game_id)
+    && ui.snapshot.status === "active"
     && !ui.requestPending
     && ui.connection === "connected";
 }
@@ -239,6 +294,27 @@ function canHumanMove() {
 /** @description 색상 이름을 현재 언어로 표시합니다. */
 function colorName(color) {
   return i18n.t(color === "black" ? "color.black" : "color.white");
+}
+
+/** @description 행위자 이름을 현재 언어로 표시합니다. */
+function actorName(actor) {
+  return i18n.t(actor === "llm" ? "actor.llm" : "actor.human");
+}
+
+/** @description 체스 결과를 현재 언어의 종료 문구로 표시합니다. */
+function resultText(result) {
+  if (result === "1-0" || result === "0-1") {
+    const winnerColor = result === "1-0" ? "white" : "black";
+    return winnerColor === ui.snapshot.human_color
+      ? i18n.t("result.humanWin")
+      : i18n.t("result.llmWin");
+  }
+  return result || i18n.t("result.unknown");
+}
+
+/** @description 무르기 요청의 수를 현지화한 단위로 표시합니다. */
+function takebackPlies(count) {
+  return i18n.t(count === 1 ? "takeback.count.one" : "takeback.count.many", { count });
 }
 
 /** @description 서버 종료 사유를 현재 언어의 상태 문구로 바꿉니다. */
@@ -261,6 +337,15 @@ function statusText() {
   }
   if (snapshot.game_id === null || snapshot.status === "setup") {
     return i18n.t("status.setup");
+  }
+  if (snapshot.status === "resigned") {
+    return i18n.t("status.resigned", {
+      actor: actorName(snapshot.resigned_by),
+      result: resultText(snapshot.result),
+    });
+  }
+  if (isTakebackPending()) {
+    return i18n.t(snapshot.takeback.requester === "llm" ? "status.takebackLlm" : "status.takebackHuman");
   }
   if (snapshot.status === "checkmate") {
     return statusReasonText();
@@ -300,6 +385,21 @@ function renderClock() {
     label = i18n.t("clock.requestError.label");
     value = i18n.t("clock.requestError.value");
     detail = i18n.t("clock.requestError.detail");
+  } else if (snapshot.status === "resigned") {
+    tone = "terminal";
+    label = i18n.t("clock.resigned.label");
+    value = i18n.t("clock.resigned.value");
+    detail = i18n.t("clock.resigned.detail", {
+      actor: actorName(snapshot.resigned_by),
+      result: resultText(snapshot.result),
+    });
+  } else if (isTakebackPending()) {
+    tone = snapshot.takeback.requester === "llm" ? "human" : "llm";
+    label = i18n.t("clock.takeback.label");
+    value = i18n.t(snapshot.takeback.requester === "llm" ? "clock.takeback.incomingValue" : "clock.takeback.outgoingValue");
+    detail = i18n.t(snapshot.takeback.requester === "llm" ? "clock.takeback.incomingDetail" : "clock.takeback.outgoingDetail", {
+      plies: takebackPlies(snapshot.takeback.undone_plies),
+    });
   } else if (snapshot.status === "checkmate" || snapshot.status === "draw") {
     tone = "terminal";
     label = i18n.t(snapshot.status === "checkmate" ? "clock.checkmate.label" : "clock.draw.label");
@@ -350,7 +450,15 @@ function render() {
     ? i18n.t("match.game", { id: snapshot.game_id.slice(0, 8) })
     : i18n.t("match.none");
   elements.boardCaption.textContent = snapshot.game_id
-    ? i18n.t(snapshot.turn === "human" ? "board.caption.human" : snapshot.turn === "llm" ? "board.caption.llm" : "board.caption.terminal", { color: colorName(snapshot.human_color) })
+    ? i18n.t(snapshot.status === "resigned"
+      ? "board.caption.resigned"
+      : isTakebackPending()
+        ? snapshot.takeback.requester === "llm" ? "board.caption.takebackLlm" : "board.caption.takebackHuman"
+        : snapshot.turn === "human" ? "board.caption.human" : snapshot.turn === "llm" ? "board.caption.llm" : "board.caption.terminal", {
+      color: colorName(snapshot.human_color),
+      actor: actorName(snapshot.resigned_by),
+      result: resultText(snapshot.result),
+    })
     : i18n.t("board.chooseColor");
   elements.boardStatus.textContent = statusText();
   elements.revisionLabel.textContent = i18n.t("board.revision", { revision: snapshot.revision });
@@ -363,11 +471,14 @@ function render() {
   elements.topbar.inert = ui.setupOpen;
   elements.workspace.inert = ui.setupOpen;
   elements.newGameButton.disabled = ui.requestPending;
+  elements.takebackButton.disabled = !canRequestTakeback();
+  elements.resignButton.disabled = !canResign();
   elements.colorButtons.forEach((button) => {
     button.disabled = ui.requestPending;
   });
   elements.setupError.hidden = !ui.error || !ui.setupOpen;
   elements.setupError.textContent = errorText();
+  renderActionDialog();
   if (ui.setupOpen && setupWasHidden) {
     requestAnimationFrame(() => elements.colorButtons[0].focus());
   } else if (!ui.setupOpen && !setupWasHidden) {
@@ -375,6 +486,127 @@ function render() {
     ui.setupReturnFocus = null;
     requestAnimationFrame(() => returnFocus.focus());
   }
+}
+
+/** @description 게임 동작 대화상자의 현재 모드를 화면에 반영합니다. */
+function renderActionDialog() {
+  const pending = ui.snapshot.takeback;
+  const incomingPending = isTakebackPending() && pending.requester === "llm";
+  if (incomingPending && ui.actionDialogMode !== "takeback-response") {
+    ui.actionDialogMode = "takeback-response";
+  }
+  if (ui.actionDialogMode === "takeback-response" && !incomingPending) {
+    ui.actionDialogMode = null;
+  }
+  if (ui.actionDialogMode === "takeback-request" && (
+    !ui.snapshot.game_id
+    || ui.snapshot.status !== "active"
+    || isTakebackPending()
+    || !ui.snapshot.move_history.some((move) => move.actor === "human")
+  )) {
+    ui.actionDialogMode = null;
+  }
+  if (ui.actionDialogMode === "resign-confirm" && (
+    !ui.snapshot.game_id
+    || ui.snapshot.status !== "active"
+  )) {
+    ui.actionDialogMode = null;
+  }
+  if (!ui.actionDialogMode) {
+    if (elements.actionDialog.open) {
+      elements.actionDialog.close();
+    }
+    return;
+  }
+
+  const details = ui.actionDialogMode === "takeback-response"
+    ? pending
+    : ui.actionDialogMode === "takeback-request"
+      ? takebackPreview()
+      : null;
+  const plies = details ? takebackPlies(details.undone_plies) : "";
+  const target = details?.target_ply ?? 0;
+  const copy = {
+    "takeback-request": {
+      eyebrow: i18n.t("takeback.dialog.eyebrow"),
+      heading: i18n.t("takeback.request.heading"),
+      description: i18n.t("takeback.request.description", { plies, target }),
+      aria: i18n.t("takeback.aria"),
+      cancel: i18n.t("takeback.request.cancel"),
+      primary: i18n.t("takeback.request.confirm"),
+    },
+    "takeback-response": {
+      eyebrow: i18n.t("takeback.dialog.eyebrow"),
+      heading: i18n.t("takeback.response.heading"),
+      description: i18n.t("takeback.response.description", { plies, target }),
+      aria: i18n.t("takeback.aria"),
+      reject: i18n.t("takeback.response.reject"),
+      accept: i18n.t("takeback.response.accept"),
+    },
+    "resign-confirm": {
+      eyebrow: i18n.t("resign.dialog.eyebrow"),
+      heading: i18n.t("resign.heading"),
+      description: i18n.t("resign.description"),
+      aria: i18n.t("resign.aria"),
+      cancel: i18n.t("resign.cancel"),
+      resign: i18n.t("resign.confirm"),
+    },
+  }[ui.actionDialogMode];
+  if (!copy) {
+    ui.actionDialogMode = null;
+    return;
+  }
+
+  elements.actionDialogEyebrow.textContent = copy.eyebrow;
+  elements.actionDialogHeading.textContent = copy.heading;
+  elements.actionDialogDescription.textContent = copy.description;
+  elements.actionDialogError.hidden = !ui.error;
+  elements.actionDialogError.textContent = errorText();
+  elements.actionDialog.setAttribute("aria-label", copy.aria);
+  elements.actionDialogCancel.hidden = !copy.cancel;
+  elements.actionDialogCancel.textContent = copy.cancel || "";
+  elements.actionDialogReject.hidden = !copy.reject;
+  elements.actionDialogReject.textContent = copy.reject || "";
+  elements.actionDialogAccept.hidden = !copy.accept;
+  elements.actionDialogAccept.textContent = copy.accept || "";
+  elements.actionDialogPrimary.hidden = !copy.primary;
+  elements.actionDialogPrimary.textContent = copy.primary || "";
+  elements.actionDialogResign.hidden = !copy.resign;
+  elements.actionDialogResign.textContent = copy.resign || "";
+  [
+    elements.actionDialogCancel,
+    elements.actionDialogReject,
+    elements.actionDialogAccept,
+    elements.actionDialogPrimary,
+    elements.actionDialogResign,
+  ].forEach((button) => {
+    button.disabled = ui.requestPending;
+  });
+  if (!elements.actionDialog.open) {
+    elements.actionDialog.showModal();
+  }
+}
+
+/** @description 확인이 필요한 게임 동작 대화상자를 엽니다. */
+function openActionDialog(mode) {
+  if (mode === "takeback-request" && !canRequestTakeback()) {
+    return;
+  }
+  if (mode === "resign-confirm" && !canResign()) {
+    return;
+  }
+  ui.error = null;
+  ui.actionDialogMode = mode;
+  render();
+}
+
+/** @description 게임 동작 대화상자를 닫고 모드를 초기화합니다. */
+function closeActionDialog() {
+  ui.actionDialogMode = null;
+  if (elements.actionDialog.open) {
+    elements.actionDialog.close();
+  }
+  render();
 }
 
 /** @description 마지막 수를 읽기 쉬운 SAN과 UCI로 표시합니다. */
@@ -641,6 +873,57 @@ async function submitHumanMove(uci) {
   }
 }
 
+/** @description 무르기 요청 또는 응답을 서버에 전송합니다. */
+async function submitTakeback(action) {
+  if (ui.requestPending) {
+    return;
+  }
+  if (action === "request" && !canRequestTakeback()) {
+    return;
+  }
+  if ((action === "accept" || action === "reject") && !isTakebackPending()) {
+    return;
+  }
+  ui.requestPending = true;
+  ui.error = null;
+  render();
+  try {
+    const snapshot = await requestJson("/api/human/takeback", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    applySnapshot(snapshot);
+    ui.connection = "connected";
+    ui.actionDialogMode = null;
+  } catch (error) {
+    ui.error = localizedErrorState(error, "error.takeback");
+  } finally {
+    ui.requestPending = false;
+    render();
+  }
+}
+
+/** @description 사람의 항복을 서버에 전송합니다. */
+async function submitResignation() {
+  if (!canResign()) {
+    return;
+  }
+  ui.requestPending = true;
+  ui.error = null;
+  render();
+  try {
+    const snapshot = await requestJson("/api/human/resign", { method: "POST" });
+    applySnapshot(snapshot);
+    ui.connection = "connected";
+    ui.actionDialogMode = null;
+  } catch (error) {
+    ui.error = localizedErrorState(error, "error.resign");
+  } finally {
+    ui.requestPending = false;
+    render();
+  }
+}
+
 
 
 
@@ -703,6 +986,8 @@ function connectEvents() {
 /** @description 브라우저 이벤트를 연결합니다. */
 function bindEvents() {
   elements.newGameButton.addEventListener("click", openNewGame);
+  elements.takebackButton.addEventListener("click", () => openActionDialog("takeback-request"));
+  elements.resignButton.addEventListener("click", () => openActionDialog("resign-confirm"));
   elements.colorButtons.forEach((button) => {
     button.addEventListener("click", () => startGame(button.dataset.color));
   });
@@ -717,6 +1002,30 @@ function bindEvents() {
   elements.promotionCancel.addEventListener("click", () => {
     ui.promotionMoves = [];
     ui.selectedSquare = null;
+  });
+  elements.actionDialogCancel.addEventListener("click", closeActionDialog);
+  elements.actionDialogPrimary.addEventListener("click", () => submitTakeback("request"));
+  elements.actionDialogReject.addEventListener("click", () => submitTakeback("reject"));
+  elements.actionDialogAccept.addEventListener("click", () => submitTakeback("accept"));
+  elements.actionDialogResign.addEventListener("click", submitResignation);
+  elements.actionDialog.addEventListener("cancel", (event) => {
+    if (ui.actionDialogMode === "takeback-response" && isTakebackPending()) {
+      event.preventDefault();
+      return;
+    }
+    ui.actionDialogMode = null;
+  });
+  elements.actionDialog.addEventListener("click", (event) => {
+    if (event.target === elements.actionDialog && ui.actionDialogMode === "takeback-response") {
+      event.preventDefault();
+    }
+  });
+  elements.actionDialog.addEventListener("close", () => {
+    if (ui.actionDialogMode === "takeback-response" && isTakebackPending()) {
+      renderActionDialog();
+      return;
+    }
+    ui.actionDialogMode = null;
   });
 }
 

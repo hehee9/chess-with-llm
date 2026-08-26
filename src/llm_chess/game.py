@@ -14,6 +14,8 @@ import chess
 
 ColorName = Literal["white", "black"]
 ActorName = Literal["human", "llm"]
+TakebackAction = Literal["request", "accept", "reject"]
+TakebackState = Literal["pending", "accepted", "rejected"]
 
 
 class GameError(Exception):
@@ -54,6 +56,20 @@ class IllegalMoveError(GameError):
         super().__init__(f"불법 수입니다: {move}", 422)
 
 
+class TakebackStateError(GameError):
+    """현재 게임 상태에서 요청할 수 없는 되돌리기 동작이다."""
+
+    def __init__(self, reason: str) -> None:
+        messages = {
+            "no_move": "되돌릴 자신의 수가 없습니다.",
+            "duplicate": "이미 되돌리기 요청이 대기 중입니다.",
+            "own_request": "자신이 요청한 되돌리기에 응답할 수 없습니다.",
+            "no_pending": "대기 중인 되돌리기 요청이 없습니다.",
+            "pending_move": "되돌리기 요청이 대기 중일 때는 수를 둘 수 없습니다.",
+        }
+        super().__init__(messages[reason], 409)
+
+
 @dataclass(frozen=True)
 class _MoveData:
     """직렬화 전 수 기록."""
@@ -79,6 +95,25 @@ class _MoveData:
         }
 
 
+@dataclass(frozen=True)
+class _TakebackData:
+    """되돌리기 요청과 처리 결과를 직렬화한다."""
+
+    state: TakebackState
+    requester: ActorName
+    target_ply: int
+    undone_plies: int
+
+    def as_dict(self) -> dict[str, object]:
+        """되돌리기 정보를 API 응답 모양으로 변환한다."""
+        return {
+            "state": self.state,
+            "requester": self.requester,
+            "target_ply": self.target_ply,
+            "undone_plies": self.undone_plies,
+        }
+
+
 class GameManager:
     """한 개의 인메모리 체스 게임과 변경 알림을 소유한다."""
 
@@ -90,6 +125,8 @@ class GameManager:
         self._llm_color: ColorName | None = None
         self._move_history: list[_MoveData] = []
         self._last_move: _MoveData | None = None
+        self._takeback: _TakebackData | None = None
+        self._resigned_by: ActorName | None = None
         self._revision = 0
         self._event = "setup"
         self._published: list[dict[str, object]] = []
@@ -106,17 +143,25 @@ class GameManager:
         check = False
         checked_king_square: str | None = None
         result: str | None = None
+        resigned_by = self._resigned_by
 
         if board is not None:
-            outcome = board.outcome(claim_draw=True)
-            if outcome is None:
-                status = "active"
-                status_reason = "in_progress"
-                turn = "human" if board.turn == (self._human_color == "white") else "llm"
+            if resigned_by is not None:
+                status = "resigned"
+                status_reason = "resignation"
+                resigned_color = self._human_color if resigned_by == "human" else self._llm_color
+                winner_color = "black" if resigned_color == "white" else "white"
+                result = "1-0" if winner_color == "white" else "0-1"
             else:
-                status = "checkmate" if outcome.termination is chess.Termination.CHECKMATE else "draw"
-                status_reason = outcome.termination.name.lower()
-                result = outcome.result()
+                outcome = board.outcome(claim_draw=True)
+                if outcome is None:
+                    status = "active"
+                    status_reason = "in_progress"
+                    turn = "human" if board.turn == (self._human_color == "white") else "llm"
+                else:
+                    status = "checkmate" if outcome.termination is chess.Termination.CHECKMATE else "draw"
+                    status_reason = outcome.termination.name.lower()
+                    result = outcome.result()
 
             fen = board.fen()
             pieces = {
@@ -127,16 +172,21 @@ class GameManager:
             if check:
                 king_square = board.king(board.turn)
                 checked_king_square = chess.square_name(king_square) if king_square is not None else None
-            for move in board.legal_moves:
-                legal_moves.append(
-                    {
-                        "uci": move.uci(),
-                        "san": board.san(move),
-                        "from": chess.square_name(move.from_square),
-                        "to": chess.square_name(move.to_square),
-                        "promotion": chess.piece_symbol(move.promotion) if move.promotion else None,
-                    }
-                )
+            takeback_pending = self._takeback is not None and self._takeback.state == "pending"
+            if status == "active" and not takeback_pending:
+                for move in board.legal_moves:
+                    legal_moves.append(
+                        {
+                            "uci": move.uci(),
+                            "san": board.san(move),
+                            "from": chess.square_name(move.from_square),
+                            "to": chess.square_name(move.to_square),
+                            "promotion": chess.piece_symbol(move.promotion) if move.promotion else None,
+                        }
+                    )
+            if takeback_pending:
+                status = "active"
+                status_reason = "takeback_pending"
 
         return {
             "event": self._event,
@@ -144,6 +194,8 @@ class GameManager:
             "revision": self._revision,
             "status": status,
             "status_reason": status_reason,
+            "resigned_by": resigned_by,
+            "takeback": self._takeback.as_dict() if self._takeback else None,
             "human_color": self._human_color,
             "llm_color": self._llm_color,
             "turn": turn,
@@ -176,7 +228,13 @@ class GameManager:
             if snapshot["event"] == "game_reset":
                 return snapshot
         for snapshot in pending:
-            if snapshot["status"] in {"checkmate", "draw"} or snapshot["turn"] == "llm":
+            if snapshot["status"] in {"checkmate", "draw", "resigned"}:
+                return snapshot
+            takeback = snapshot.get("takeback")
+            takeback_is_pending = isinstance(takeback, dict) and takeback.get("state") == "pending"
+            if takeback_is_pending and takeback.get("requester") == "human":
+                return snapshot
+            if snapshot["turn"] == "llm" and not takeback_is_pending:
                 return snapshot
         return None
 
@@ -195,6 +253,8 @@ class GameManager:
             self._llm_color = "black" if human_color == "white" else "white"
             self._move_history = []
             self._last_move = None
+            self._takeback = None
+            self._resigned_by = None
             event = "game_reset" if was_existing_game else "game_started"
             snapshot = self._publish_unlocked(event)
             self._condition.notify_all()
@@ -203,10 +263,19 @@ class GameManager:
     def _require_board_unlocked(self) -> chess.Board:
         if self._board is None:
             raise NoGameError()
+        if self._resigned_by is not None:
+            raise GameOverError()
         outcome = self._board.outcome(claim_draw=True)
         if outcome is not None:
             raise GameOverError()
         return self._board
+
+    def _require_move_board_unlocked(self) -> chess.Board:
+        """수 적용에 필요한 게임 상태를 확인한다."""
+        board = self._require_board_unlocked()
+        if self._takeback is not None and self._takeback.state == "pending":
+            raise TakebackStateError("pending_move")
+        return board
 
     def _require_turn_unlocked(self, actor: ActorName, board: chess.Board) -> None:
         expected = self._human_color if actor == "human" else self._llm_color
@@ -244,11 +313,13 @@ class GameManager:
         )
         self._move_history.append(data)
         self._last_move = data
+        if self._takeback is not None and self._takeback.state != "pending":
+            self._takeback = None
 
     async def human_move(self, move_text: str) -> dict[str, object]:
         """UCI로 사람의 수를 적용한다."""
         async with self._condition:
-            board = self._require_board_unlocked()
+            board = self._require_move_board_unlocked()
             self._require_turn_unlocked("human", board)
             move = self._parse_move_unlocked(move_text, allow_san=False, board=board)
             self._apply_move_unlocked(board, move, "human")
@@ -260,7 +331,7 @@ class GameManager:
     async def llm_move(self, move_text: str, wait: bool = True) -> dict[str, object]:
         """UCI 또는 SAN으로 언어 모델의 수를 적용하고 필요하면 기다린다."""
         async with self._condition:
-            board = self._require_board_unlocked()
+            board = self._require_move_board_unlocked()
             self._require_turn_unlocked("llm", board)
             move = self._parse_move_unlocked(move_text, allow_san=True, board=board)
             self._apply_move_unlocked(board, move, "llm")
@@ -283,7 +354,13 @@ class GameManager:
         """언어 모델 차례 또는 게임 종료/초기화를 기다린다."""
         async with self._condition:
             current = self._current_snapshot_unlocked()
-            if current["status"] in {"checkmate", "draw"} or current["turn"] == "llm":
+            takeback = current.get("takeback")
+            takeback_is_pending = isinstance(takeback, dict) and takeback.get("state") == "pending"
+            if (
+                current["status"] in {"checkmate", "draw", "resigned"}
+                or (current["turn"] == "llm" and not takeback_is_pending)
+                or (takeback_is_pending and takeback.get("requester") == "human")
+            ):
                 return current
             waited_revision = int(current["revision"])
             while True:
@@ -293,6 +370,97 @@ class GameManager:
                 if result is not None:
                     return result
                 waited_revision = self._revision
+
+    async def takeback(self, actor: ActorName, action: TakebackAction) -> dict[str, object]:
+        """되돌리기를 요청하거나 상대의 요청에 응답한다."""
+        if action not in {"request", "accept", "reject"}:
+            raise GameError("유효하지 않은 되돌리기 동작입니다.", 422)
+        async with self._condition:
+            board = self._require_board_unlocked()
+            pending = self._takeback
+            if action == "request":
+                if pending is not None and pending.state == "pending":
+                    raise TakebackStateError("duplicate")
+                own_move_index = next(
+                    (index for index in range(len(self._move_history) - 1, -1, -1)
+                     if self._move_history[index].actor == actor),
+                    None,
+                )
+                if own_move_index is None:
+                    raise TakebackStateError("no_move")
+                target = self._move_history[own_move_index]
+                undone_plies = 1 if own_move_index == len(self._move_history) - 1 else 2
+                request = _TakebackData(
+                    state="pending",
+                    requester=actor,
+                    target_ply=target.ply,
+                    undone_plies=undone_plies,
+                )
+                self._takeback = request
+                event = "takeback_requested"
+                snapshot = self._publish_unlocked(event)
+                self._condition.notify_all()
+                if actor == "llm":
+                    while self._takeback is request:
+                        await self._condition.wait()
+                    response_events = {
+                        "takeback_accepted",
+                        "takeback_rejected",
+                        "human_resigned",
+                        "llm_resigned",
+                        "game_reset",
+                    }
+                    for response in self._snapshots_after_unlocked(int(snapshot["revision"])):
+                        if response["event"] in response_events:
+                            return response
+                    raise RuntimeError("되돌리기 응답 이벤트가 없습니다.")
+                return snapshot
+
+            if pending is None or pending.state != "pending":
+                raise TakebackStateError("no_pending")
+            if pending.requester == actor:
+                raise TakebackStateError("own_request")
+            if action == "reject":
+                self._takeback = _TakebackData(
+                    state="rejected",
+                    requester=pending.requester,
+                    target_ply=pending.target_ply,
+                    undone_plies=0,
+                )
+                snapshot = self._publish_unlocked("takeback_rejected")
+                self._condition.notify_all()
+                return snapshot
+            own_move_index = next(
+                (index for index in range(len(self._move_history) - 1, -1, -1)
+                 if self._move_history[index].actor == pending.requester),
+                None,
+            )
+            if own_move_index is None:
+                raise TakebackStateError("no_move")
+            undone_plies = 1 if own_move_index == len(self._move_history) - 1 else 2
+            for _ in range(undone_plies):
+                board.pop()
+            self._move_history = self._move_history[:-undone_plies]
+            self._last_move = self._move_history[-1] if self._move_history else None
+            self._takeback = _TakebackData(
+                state="accepted",
+                requester=pending.requester,
+                target_ply=pending.target_ply,
+                undone_plies=undone_plies,
+            )
+            snapshot = self._publish_unlocked("takeback_accepted")
+            self._condition.notify_all()
+            return snapshot
+
+    async def resign(self, actor: ActorName) -> dict[str, object]:
+        """행위자의 사임으로 게임을 종료한다."""
+        async with self._condition:
+            self._require_board_unlocked()
+            self._takeback = None
+            self._resigned_by = actor
+            snapshot = self._publish_unlocked(f"{actor}_resigned")
+            self._condition.notify_all()
+            return snapshot
 
     async def event_stream(self) -> AsyncIterator[dict[str, object]]:
         """초기 스냅샷부터 모든 상태 변경을 순서대로 내보낸다."""

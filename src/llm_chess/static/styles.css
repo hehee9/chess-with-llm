@@ -154,8 +154,20 @@ select:focus-visible {
 }
 
 .topbar-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   min-width: 0;
-  gap: 16px;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.game-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .match-id {
@@ -250,6 +262,19 @@ select:focus-visible {
 .button-secondary:focus-visible {
   border-color: var(--brass);
   background: var(--graphite-700);
+}
+
+.button-danger {
+  border-color: var(--danger-bright);
+  background: transparent;
+  color: var(--danger-bright);
+}
+
+.button-danger:hover:not(:disabled),
+.button-danger:focus-visible {
+  border-color: var(--danger-bright);
+  background: rgba(200, 94, 85, 0.18);
+  color: var(--chalk);
 }
 
 .button-ghost {
@@ -879,6 +904,61 @@ select:focus-visible {
   font-size: 0.625rem;
 }
 
+.action-dialog {
+  width: min(100% - 48px, 500px);
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--graphite-900);
+  color: var(--chalk);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.action-dialog::backdrop {
+  background: rgba(18, 21, 24, 0.78);
+}
+
+.action-dialog-form {
+  padding: 28px;
+}
+
+.action-dialog-form h2 {
+  margin: 8px 0 0;
+  color: var(--chalk);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.action-dialog-copy {
+  max-width: 52ch;
+  overflow-wrap: anywhere;
+  margin: 12px 0 0;
+  color: var(--chalk-muted);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+
+.action-dialog-error {
+  margin: 12px 0 0;
+  color: var(--danger-bright);
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+
+.action-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.action-dialog-actions .button {
+  min-width: 84px;
+}
+
 @media (max-width: 1160px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr) 312px;
@@ -891,6 +971,24 @@ select:focus-visible {
   .rail-section {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .topbar {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .topbar-meta {
+    gap: 8px;
+  }
+
+  .game-actions {
+    gap: 6px;
+  }
+
+  .game-actions .button {
+    padding-right: 10px;
+    padding-left: 10px;
   }
 }
 

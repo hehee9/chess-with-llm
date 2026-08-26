@@ -3,7 +3,13 @@ import asyncio
 import chess
 import pytest
 
-from llm_chess.game import GameManager, GameOverError, IllegalMoveError, WrongTurnError
+from llm_chess.game import (
+    GameManager,
+    GameOverError,
+    IllegalMoveError,
+    TakebackStateError,
+    WrongTurnError,
+)
 
 
 @pytest.mark.asyncio
@@ -145,6 +151,7 @@ async def test_stalemate_repetition_and_fifty_move_draws_are_detected() -> None:
     fifty_move_snapshot = await fifty_move.snapshot()
     assert fifty_move_snapshot["status"] == "draw"
     assert fifty_move_snapshot["status_reason"] == "fifty_moves"
+    assert fifty_move_snapshot["legal_moves"] == []
 
     repetition = GameManager()
     await repetition.start_game("white")
@@ -157,3 +164,142 @@ async def test_stalemate_repetition_and_fifty_move_draws_are_detected() -> None:
     repeated = await repetition.human_move("f3g1")
     assert repeated["status"] == "draw"
     assert repeated["status_reason"] == "threefold_repetition"
+
+
+@pytest.mark.asyncio
+async def test_takeback_request_and_acceptance_undo_one_or_two_plies() -> None:
+    one_ply = GameManager()
+    await one_ply.start_game("white")
+    await one_ply.human_move("e2e4")
+    pending = await one_ply.takeback("human", "request")
+    assert pending["event"] == "takeback_requested"
+    assert pending["status"] == "active"
+    assert pending["status_reason"] == "takeback_pending"
+    assert pending["takeback"] == {
+        "state": "pending",
+        "requester": "human",
+        "target_ply": 1,
+        "undone_plies": 1,
+    }
+    assert pending["legal_moves"] == []
+    accepted = await one_ply.takeback("llm", "accept")
+    assert accepted["event"] == "takeback_accepted"
+    assert accepted["takeback"]["undone_plies"] == 1
+    assert accepted["turn"] == "human"
+    assert accepted["move_history"] == []
+    assert accepted["last_move"] is None
+
+    two_plies = GameManager()
+    await two_plies.start_game("white")
+    await two_plies.human_move("e2e4")
+    await two_plies.llm_move("e7e5", wait=False)
+    pending = await two_plies.takeback("human", "request")
+    assert pending["takeback"]["undone_plies"] == 2
+    accepted = await two_plies.takeback("llm", "accept")
+    assert accepted["takeback"]["undone_plies"] == 2
+    assert accepted["turn"] == "human"
+    assert accepted["move_history"] == []
+    assert accepted["last_move"] is None
+
+
+@pytest.mark.asyncio
+async def test_takeback_rejection_preserves_position_and_move_clears_result() -> None:
+    manager = GameManager()
+    await manager.start_game("white")
+    await manager.human_move("e2e4")
+    await manager.llm_move("e7e5", wait=False)
+    before = await manager.snapshot()
+    await manager.takeback("human", "request")
+    rejected = await manager.takeback("llm", "reject")
+    assert rejected["event"] == "takeback_rejected"
+    assert rejected["takeback"]["state"] == "rejected"
+    assert rejected["takeback"]["undone_plies"] == 0
+    assert rejected["fen"] == before["fen"]
+    assert rejected["move_history"] == before["move_history"]
+    resumed = await manager.human_move("g1f3")
+    assert resumed["takeback"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_takeback_freezes_moves_and_wakes_waiters() -> None:
+    manager = GameManager()
+    await manager.start_game("black")
+    await manager.llm_move("e2e4", wait=False)
+    await manager.human_move("e7e5")
+    waiting_move = asyncio.create_task(manager.llm_move("g1f3", wait=True))
+    await asyncio.sleep(0)
+    await manager.takeback("human", "request")
+    result = await asyncio.wait_for(waiting_move, timeout=1)
+    assert result["event"] == "takeback_requested"
+    with pytest.raises(TakebackStateError):
+        await manager.llm_move("g1f3", wait=False)
+    with pytest.raises(TakebackStateError):
+        await manager.takeback("human", "request")
+    assert (await manager.wait_for_llm())["event"] == "takeback_requested"
+
+
+@pytest.mark.asyncio
+async def test_llm_takeback_waits_for_human_and_resignation_wakes_it() -> None:
+    manager = GameManager()
+    await manager.start_game("white")
+    await manager.human_move("e2e4")
+    await manager.llm_move("e7e5", wait=False)
+    request = asyncio.create_task(manager.takeback("llm", "request"))
+    await asyncio.sleep(0)
+    assert (await manager.snapshot())["takeback"]["state"] == "pending"
+    resigned = await manager.resign("human")
+    result = await asyncio.wait_for(request, timeout=1)
+    assert resigned["event"] == "human_resigned"
+    assert result["status"] == "resigned"
+    assert result["status_reason"] == "resignation"
+    assert result["resigned_by"] == "human"
+    assert result["turn"] is None
+    assert result["legal_moves"] == []
+    assert result["result"] == "0-1"
+
+
+@pytest.mark.asyncio
+async def test_llm_takeback_waiter_returns_its_original_reset_after_new_request() -> None:
+    manager = GameManager()
+    await manager.start_game("white")
+    await manager.human_move("e2e4")
+    await manager.llm_move("e7e5", wait=False)
+    original = asyncio.create_task(manager.takeback("llm", "request"))
+    await asyncio.sleep(0)
+
+    await manager.start_game("white")
+    await manager.human_move("e2e4")
+    await manager.takeback("human", "request")
+
+    result = await asyncio.wait_for(original, timeout=1)
+    assert result["event"] == "game_reset"
+
+
+@pytest.mark.asyncio
+async def test_llm_pending_takeback_does_not_wake_llm_wait_or_blocking_move() -> None:
+    manager = GameManager()
+    await manager.start_game("black")
+    await manager.llm_move("e2e4", wait=False)
+    await manager.human_move("e7e5")
+    blocking_move = asyncio.create_task(manager.llm_move("g1f3", wait=True))
+    await asyncio.sleep(0)
+    request = asyncio.create_task(manager.takeback("llm", "request"))
+    await asyncio.sleep(0)
+    assert not blocking_move.done()
+
+    waiting = asyncio.create_task(manager.wait_for_llm())
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    rejected = await manager.takeback("human", "reject")
+    assert rejected["event"] == "takeback_rejected"
+    assert not blocking_move.done()
+    assert not waiting.done()
+    await manager.human_move("d7d5")
+
+    move_result = await asyncio.wait_for(blocking_move, timeout=1)
+    wait_result = await asyncio.wait_for(waiting, timeout=1)
+    request_result = await asyncio.wait_for(request, timeout=1)
+    assert move_result["event"] == "human_move"
+    assert wait_result["event"] == "human_move"
+    assert request_result["event"] == "takeback_rejected"

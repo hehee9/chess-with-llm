@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from .game import GameError, GameManager
+from .game import GameError, GameManager, TakebackAction
 
 
 class NewGameRequest(BaseModel):
@@ -34,8 +34,15 @@ class LlmMoveRequest(MoveRequest):
     wait: bool = True
 
 
+class TakebackRequest(BaseModel):
+    """되돌리기 동작 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: TakebackAction
+
+
 manager = GameManager()
-app = FastAPI(title="llm-chess", version="0.1.0")
+app = FastAPI(title="llm-chess", version="0.2.0")
 
 
 def _raise_game_error(error: GameError) -> None:
@@ -65,6 +72,42 @@ async def human_moves(request: MoveRequest) -> dict[str, object]:
     """사람의 UCI 수를 적용한다."""
     try:
         return await manager.human_move(request.move)
+    except GameError as error:
+        _raise_game_error(error)
+
+
+@app.post("/api/human/takeback")
+async def human_takeback(request: TakebackRequest) -> dict[str, object]:
+    """사람이 되돌리기를 요청하거나 언어 모델의 요청에 응답한다."""
+    try:
+        return await manager.takeback("human", request.action)
+    except GameError as error:
+        _raise_game_error(error)
+
+
+@app.post("/api/llm/takeback")
+async def llm_takeback(request: TakebackRequest) -> dict[str, object]:
+    """언어 모델이 되돌리기를 요청하거나 사람의 요청에 응답한다."""
+    try:
+        return await manager.takeback("llm", request.action)
+    except GameError as error:
+        _raise_game_error(error)
+
+
+@app.post("/api/human/resign")
+async def human_resign() -> dict[str, object]:
+    """사람의 사임으로 게임을 종료한다."""
+    try:
+        return await manager.resign("human")
+    except GameError as error:
+        _raise_game_error(error)
+
+
+@app.post("/api/llm/resign")
+async def llm_resign() -> dict[str, object]:
+    """언어 모델의 사임으로 게임을 종료한다."""
+    try:
+        return await manager.resign("llm")
     except GameError as error:
         _raise_game_error(error)
 

@@ -40,7 +40,11 @@ FORM: Operate용 clock-workbench 구성, 사용자 확정 방향을 채택한 �
             <option value="de">Deutsch</option>
           </select>
         </label>
-        <button class="button button-secondary button-compact" id="new-game-button" data-i18n="toolbar.newGame" type="button">New game</button>
+        <div class="game-actions" data-i18n-aria-label="toolbar.actions" aria-label="Game actions">
+          <button class="button button-secondary button-compact" id="takeback-button" data-i18n="toolbar.takeback" type="button">Take back</button>
+          <button class="button button-danger button-compact" id="resign-button" data-i18n="toolbar.resign" type="button">Resign</button>
+          <button class="button button-secondary button-compact" id="new-game-button" data-i18n="toolbar.newGame" type="button">New game</button>
+        </div>
       </div>
     </header>
 
@@ -148,6 +152,22 @@ FORM: Operate용 clock-workbench 구성, 사용자 확정 방향을 채택한 �
         <div class="promotion-options" id="promotion-options"></div>
         <button class="button button-ghost" id="promotion-cancel" data-i18n="promotion.cancel" value="cancel" type="submit">Cancel</button>
       </form>
+    </dialog>
+
+    <dialog class="action-dialog" id="game-action-dialog" aria-labelledby="action-dialog-heading" aria-describedby="action-dialog-description" data-i18n-aria-label="takeback.aria" aria-label="Takeback action dialog">
+      <div class="action-dialog-form">
+        <p class="section-label" id="action-dialog-eyebrow" data-i18n="takeback.dialog.eyebrow">GAME ACTION · TAKEBACK</p>
+        <h2 id="action-dialog-heading" data-i18n="takeback.request.heading">Request a takeback?</h2>
+        <p class="action-dialog-copy" id="action-dialog-description" data-i18n="takeback.request.description">Ask the LLM to take back {plies}, including the move at ply {target}.</p>
+        <p class="action-dialog-error" id="action-dialog-error" role="alert" hidden></p>
+        <div class="action-dialog-actions">
+          <button class="button button-ghost" id="action-dialog-cancel" data-i18n="takeback.request.cancel" type="button">Cancel</button>
+          <button class="button button-ghost" id="action-dialog-reject" data-i18n="takeback.response.reject" type="button" hidden>Reject</button>
+          <button class="button button-primary" id="action-dialog-accept" data-i18n="takeback.response.accept" type="button" hidden>Accept</button>
+          <button class="button button-primary" id="action-dialog-primary" data-i18n="takeback.request.confirm" type="button">Request</button>
+          <button class="button button-danger" id="action-dialog-resign" data-i18n="resign.confirm" type="button" hidden>Resign</button>
+        </div>
+      </div>
     </dialog>
   </div>
   <script src="/static/i18n.js"></script>

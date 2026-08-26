@@ -12,6 +12,8 @@ def test_help_is_markdown(capsys) -> None:
     output = capsys.readouterr().out
     assert output.startswith("# chess")
     assert "chess move MOVE" in output
+    assert "chess takeback request|accept|reject" in output
+    assert "chess resign" in output
     assert "Control a local human-vs-LLM chess game." in output
     _assert_english(output)
 
@@ -70,3 +72,112 @@ def test_server_errors_are_rendered_in_english() -> None:
         "알 수 없는 서버 오류",
         500,
     ) == "Server request failed (HTTP 500)."
+
+
+def test_takeback_request_and_human_rejection_are_explicit_in_cli_results(capsys) -> None:
+    requested = {
+        "event": "takeback_requested",
+        "human_color": "white",
+        "llm_color": "black",
+        "turn": "llm",
+        "status": "active",
+        "status_reason": "takeback_pending",
+        "check": False,
+        "result": None,
+        "fen": "fen",
+        "pieces": {"e4": "P"},
+        "legal_moves": [],
+        "last_move": {"actor": "human", "uci": "e2e4", "san": "e4"},
+        "takeback": {
+            "state": "pending",
+            "requester": "human",
+            "target_ply": 1,
+            "undone_plies": 1,
+        },
+    }
+    print(cli.render_snapshot(requested))
+    output = capsys.readouterr().out
+    assert "**Takeback request:** Human requested a takeback at ply 1." in output
+    _assert_english(output)
+
+    rejected = dict(requested)
+    rejected.update(
+        event="takeback_rejected",
+        turn="human",
+        status_reason="in_progress",
+        takeback={
+            "state": "rejected",
+            "requester": "llm",
+            "target_ply": 2,
+            "undone_plies": 0,
+        },
+    )
+    print(cli.render_snapshot(rejected))
+    output = capsys.readouterr().out
+    assert "**Takeback result:** Human rejected the takeback for LLM." in output
+    _assert_english(output)
+
+
+def test_takeback_and_resignation_commands_use_llm_endpoints(monkeypatch, capsys) -> None:
+    calls = []
+
+    def request(method, path, payload=None, **kwargs):
+        calls.append((method, path, payload, kwargs))
+        if path.endswith("takeback"):
+            return (
+                {
+                    "event": "takeback_requested",
+                    "takeback": {
+                        "state": "pending",
+                        "requester": "llm",
+                        "target_ply": 2,
+                        "undone_plies": 1,
+                    },
+                    "human_color": "white",
+                    "llm_color": "black",
+                    "turn": "human",
+                    "status": "active",
+                    "status_reason": "takeback_pending",
+                    "check": False,
+                    "result": None,
+                    "fen": None,
+                    "pieces": {},
+                    "legal_moves": [],
+                    "last_move": None,
+                },
+                0,
+            )
+        return (
+            {
+                "event": "llm_resigned",
+                "takeback": None,
+                "human_color": "white",
+                "llm_color": "black",
+                "turn": None,
+                "status": "resigned",
+                "status_reason": "resignation",
+                "check": False,
+                "result": "1-0",
+                "fen": None,
+                "pieces": {},
+                "legal_moves": [],
+                "last_move": None,
+                "resigned_by": "llm",
+            },
+            0,
+        )
+
+    monkeypatch.setattr(cli, "_request", request)
+    assert cli.main(["takeback", "request"]) == 0
+    assert cli.main(["resign"]) == 0
+    output = capsys.readouterr().out
+    assert calls[0] == (
+        "POST",
+        "/api/llm/takeback",
+        {"action": "request"},
+        {"wait_for_event": True},
+    )
+    assert calls[1][0:3] == ("POST", "/api/llm/resign", None)
+    assert "LLM requested a takeback" in output
+    assert "**Resignation:** LLM resigned." in output
+    _assert_english(output)

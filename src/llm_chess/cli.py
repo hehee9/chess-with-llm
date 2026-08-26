@@ -24,6 +24,11 @@ _SERVER_ERROR_TRANSLATIONS = {
     "현재 사람 차례가 아닙니다.": "It is not the human's turn.",
     "현재 LLM 차례가 아닙니다.": "It is not the LLM's turn.",
     "게임이 이미 끝났습니다.": "The game has already ended.",
+    "되돌릴 자신의 수가 없습니다.": "There is no previous move by this player to take back.",
+    "이미 되돌리기 요청이 대기 중입니다.": "A takeback request is already pending.",
+    "자신이 요청한 되돌리기에 응답할 수 없습니다.": "You cannot respond to your own takeback request.",
+    "대기 중인 되돌리기 요청이 없습니다.": "There is no pending takeback request.",
+    "되돌리기 요청이 대기 중일 때는 수를 둘 수 없습니다.": "Moves are disabled while a takeback request is pending.",
 }
 _ILLEGAL_MOVE_PREFIX = "불법 수입니다:"
 
@@ -41,6 +46,8 @@ chess start
 chess status
 chess wait
 chess move MOVE [--no-wait]
+chess takeback request|accept|reject
+chess resign
 ```
 
 Enter `MOVE` in UCI or SAN notation when it is the LLM's turn.
@@ -108,6 +115,32 @@ def _render_board(pieces: dict[str, str]) -> list[str]:
 def render_snapshot(snapshot: dict[str, Any]) -> str:
     """게임 스냅샷을 문서형 Markdown으로 렌더링한다."""
     lines = [f"**Event:** {snapshot.get('event', 'unknown')}"]
+    event = snapshot.get("event")
+    takeback = snapshot.get("takeback")
+    if isinstance(takeback, dict):
+        requester = takeback.get("requester")
+        requester_label = "Human" if requester == "human" else "LLM"
+        target_ply = takeback.get("target_ply")
+        if event == "takeback_requested":
+            lines.append(
+                f"**Takeback request:** {requester_label} requested a takeback at ply {target_ply}."
+            )
+        elif event in {"takeback_accepted", "takeback_rejected"}:
+            responder = "LLM" if requester == "human" else "Human"
+            if event == "takeback_accepted":
+                undone_plies = takeback.get("undone_plies", 0)
+                unit = "ply" if undone_plies == 1 else "plies"
+                lines.append(
+                    f"**Takeback result:** {responder} accepted the takeback for {requester_label}; "
+                    f"{undone_plies} {unit} undone."
+                )
+            else:
+                lines.append(
+                    f"**Takeback result:** {responder} rejected the takeback for {requester_label}."
+                )
+    if event in {"human_resigned", "llm_resigned"}:
+        actor = "Human" if event == "human_resigned" else "LLM"
+        lines.append(f"**Resignation:** {actor} resigned.")
     last_move = snapshot.get("last_move")
     if isinstance(last_move, dict):
         actor = last_move.get("actor", "unknown")
@@ -205,6 +238,9 @@ def _build_parser() -> argparse.ArgumentParser:
     move_parser = subparsers.add_parser("move")
     move_parser.add_argument("move")
     move_parser.add_argument("--no-wait", action="store_true")
+    takeback_parser = subparsers.add_parser("takeback")
+    takeback_parser.add_argument("action", choices=("request", "accept", "reject"))
+    subparsers.add_parser("resign")
     return parser
 
 
@@ -221,6 +257,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         snapshot, exit_code = _request("GET", "/api/state")
     elif args.command == "wait":
         snapshot, exit_code = _request("POST", "/api/llm/wait", wait_for_event=True)
+    elif args.command == "takeback":
+        snapshot, exit_code = _request(
+            "POST",
+            "/api/llm/takeback",
+            {"action": args.action},
+            wait_for_event=args.action == "request",
+        )
+    elif args.command == "resign":
+        snapshot, exit_code = _request("POST", "/api/llm/resign")
     else:
         snapshot, exit_code = _request(
             "POST",
@@ -231,7 +276,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if snapshot is None:
         return exit_code
     print(render_snapshot(snapshot))
-    if args.command in {"wait", "move"} and snapshot.get("event") == "game_reset":
+    if (
+        args.command in {"wait", "move"}
+        or (args.command == "takeback" and args.action == "request")
+    ) and snapshot.get("event") == "game_reset":
         return 1
     return 0
 
