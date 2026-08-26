@@ -6,7 +6,10 @@ build-backend = "hatchling.build"
 name = "llm-chess"
 version = "0.1.0"
 description = "로컬 사람 대 언어 모델 체스 앱"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
@@ -17,11 +20,19 @@ dependencies = [
 [project.scripts]
 chess = "llm_chess.cli:main"
 
+[project.urls]
+Repository = "https://github.com/hehee9/chess-with-llm"
+Issues = "https://github.com/hehee9/chess-with-llm/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_chess"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+    "/LICENSE",
+    "/README.md",
+    "/README_ko.md",
+    "/INSTALL.md",
     "/src/llm_chess",
     "/install.ps1",
     "/start.cmd",

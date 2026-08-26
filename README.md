@@ -50,3 +50,7 @@ In Codex, the bundled `play-llm-chess` skill manages the complete turn loop. Oth
 ## Game scope
 
 The server keeps one game in memory. The application provides standard legal moves, castling, en passant, promotion, check, checkmate, and draw detection. A server restart starts a fresh setup state.
+
+## License
+
+LLM Chess is licensed under the [GNU General Public License v3.0 or later](LICENSE).
